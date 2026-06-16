@@ -1,0 +1,138 @@
+name: Publish prebuilts
+
+on:
+  push:
+    branches:
+      - "**"
+  workflow_dispatch:
+    inputs:
+      target_branch:
+        description: "Target branch in DroidVM-Prebuilts. Defaults to the current branch."
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-prebuilts-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y p7zip-full
+
+      - name: Generate prebuilt artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          while IFS= read -r arch || [[ -n "${arch}" ]]; do
+            arch="${arch//$'\r'/}"
+            [[ -z "${arch}" || "${arch}" =~ ^[[:space:]]*# ]] && continue
+
+            if [[ ! -d "${arch}" ]]; then
+              echo "::error::Architecture directory '${arch}' does not exist"
+              exit 1
+            fi
+
+            python3 hash-gen.py "${arch}" "prebuilt-${arch}.json"
+            (
+              cd "${arch}"
+              7z -ms=on -mx=7 a "../prebuilt-${arch}.7z" .
+            )
+          done < arch.lst
+
+      - name: Resolve target branch
+        id: target
+        shell: bash
+        env:
+          INPUT_TARGET_BRANCH: ${{ inputs.target_branch }}
+          CURRENT_BRANCH: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          target_branch="${INPUT_TARGET_BRANCH:-${CURRENT_BRANCH}}"
+          if [[ -z "${target_branch}" ]]; then
+            echo "::error::Unable to resolve target branch"
+            exit 1
+          fi
+
+          echo "branch=${target_branch}" >> "${GITHUB_OUTPUT}"
+
+      - name: Prepare target branch
+        env:
+          TARGET_REPO: Droid-VM/DroidVM-Prebuilts
+          TARGET_BRANCH: ${{ steps.target.outputs.branch }}
+          GH_TOKEN: ${{ secrets.PREBUILTS_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${GH_TOKEN}" ]]; then
+            echo "::error::Missing secret PREBUILTS_TOKEN with write access to ${TARGET_REPO}"
+            exit 1
+          fi
+
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          target_url="https://x-access-token:${GH_TOKEN}@github.com/${TARGET_REPO}.git"
+          default_branch="$(
+            git ls-remote --symref "${target_url}" HEAD \
+              | awk '/^ref:/ { sub("refs/heads/", "", $2); print $2; exit }'
+          )"
+
+          if [[ -z "${default_branch}" ]]; then
+            echo "::error::Unable to detect default branch for ${TARGET_REPO}"
+            exit 1
+          fi
+
+          if git ls-remote --exit-code --heads "${target_url}" "${TARGET_BRANCH}" >/dev/null 2>&1; then
+            git clone --depth 1 --branch "${TARGET_BRANCH}" "${target_url}" target-repo
+          else
+            git clone --depth 1 --branch "${default_branch}" "${target_url}" target-repo
+            git -C target-repo switch -c "${TARGET_BRANCH}"
+          fi
+
+      - name: Copy artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+
+          artifacts=(prebuilt-*.json prebuilt-*.7z)
+          if (( ${#artifacts[@]} == 0 )); then
+            echo "::error::No prebuilt artifacts were generated"
+            exit 1
+          fi
+
+          cp -f "${artifacts[@]}" target-repo/
+
+      - name: Commit and push artifacts
+        env:
+          TARGET_BRANCH: ${{ steps.target.outputs.branch }}
+          SOURCE_SHA: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd target-repo
+          git add prebuilt-*.json prebuilt-*.7z
+
+          if git diff --cached --quiet; then
+            echo "No prebuilt artifact changes to publish."
+            exit 0
+          fi
+
+          git commit -m "Update prebuilts from DroidVM-Prebuilt-Root ${SOURCE_SHA}"
+          git push origin "HEAD:${TARGET_BRANCH}"
