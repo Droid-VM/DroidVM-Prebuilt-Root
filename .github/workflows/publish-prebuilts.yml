@@ -26,31 +26,59 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@v4
 
-      - name: Install tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y p7zip-full
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "stable"
 
-      - name: Generate prebuilt artifacts
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-musl
+
+      # Python 3.11+ for the pipeline scripts (stdlib tomllib -> no pip/apt deps).
+      # Per-repo build deps (clang/llvm/make/...) are installed conditionally below.
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Rolling cache of the util checkouts + toolchain caches. Restored BEFORE
+      # resolv_dep so it can compare each checkout against upstream. The run_id
+      # key always saves a fresh entry; restore-keys picks the newest.
+      - name: Cache checkouts and build outputs
+        uses: actions/cache@v4
+        with:
+          path: |
+            auto-build
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/go/pkg/mod
+          key: prebuilt-build-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: |
+            prebuilt-build-${{ runner.os }}-
+
+      # Install only the apt deps of repos that actually changed vs upstream.
+      # On an all-cached run pkgs is empty -> no apt-get runs at all (0 installs).
+      - name: Install build deps for changed repos
         shell: bash
         run: |
           set -euo pipefail
+          pkgs="$(python3 resolv_dep.py)"
+          echo "deps to install: ${pkgs:-<none>}"
+          if [ -n "$pkgs" ]; then
+            sudo apt-get update
+            sudo apt-get install -y $pkgs
+          fi
 
-          while IFS= read -r arch || [[ -n "${arch}" ]]; do
-            arch="${arch//$'\r'/}"
-            [[ -z "${arch}" || "${arch}" =~ ^[[:space:]]*# ]] && continue
-
-            if [[ ! -d "${arch}" ]]; then
-              echo "::error::Architecture directory '${arch}' does not exist"
-              exit 1
-            fi
-
-            python3 hash-gen.py "${arch}" "prebuilt-${arch}.json"
-            (
-              cd "${arch}"
-              7z -ms=on -mx=7 a "../prebuilt-${arch}.7z" .
-            )
-          done < arch.lst
+      - name: Build and pack prebuilt artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          # --force converges every changed repo to its pinned commit / branch
+          # HEAD (remote wins, unchanged repos reuse cached builds), builds per
+          # arch.lst, and writes prebuilt-* here.
+          python3 auto-build.py --force
 
       - name: Resolve target branch
         id: target
@@ -110,7 +138,7 @@ jobs:
           set -euo pipefail
           shopt -s nullglob
 
-          artifacts=(prebuilt-*.json prebuilt-*.7z)
+          artifacts=(prebuilt-*.json prebuilt-*.tar.xz prebuilt-*-comptime.zip)
           if (( ${#artifacts[@]} == 0 )); then
             echo "::error::No prebuilt artifacts were generated"
             exit 1
@@ -127,7 +155,9 @@ jobs:
           set -euo pipefail
 
           cd target-repo
-          git add prebuilt-*.json prebuilt-*.7z
+          # Drop any legacy 7z artifacts; the pipeline ships .tar.xz now.
+          git rm -f --ignore-unmatch 'prebuilt-*.7z'
+          git add prebuilt-*.json prebuilt-*.tar.xz prebuilt-*-comptime.zip
 
           if git diff --cached --quiet; then
             echo "No prebuilt artifact changes to publish."

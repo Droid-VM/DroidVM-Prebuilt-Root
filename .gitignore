@@ -1,2 +1,17 @@
-prebuilt-*.7z
+# Generated prebuilt artifacts -- published to DroidVM-Prebuilts, not tracked here.
+prebuilt-*.tar.xz
+prebuilt-*-comptime.zip
 prebuilt-*.json
+
+# Legacy 7z artifacts (pipeline now produces .tar.xz).
+prebuilt-*.7z
+
+# Comptime staging work dir (auto-build.py).
+/.comptime/
+
+# Auto-built daemons merged into the runtime staging tree. The committed
+# manual artifacts live under manual-build/<arch>/usr/.
+manual-build/*/bin/
+
+# Python bytecode cache
+__pycache__/

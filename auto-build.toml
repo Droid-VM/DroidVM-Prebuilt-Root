@@ -1,0 +1,95 @@
+# auto-build.toml -- source of truth for the DroidVM prebuilt pipeline.
+#
+# auto-build.py reads this file (stdlib tomllib -- no pip/apt deps), (optionally)
+# syncs each source repo into ./auto-build/<dir>, builds it per architecture, and
+# packs per arch:
+#
+#   prebuilt-<arch>.tar.xz          runtime payload, extracted on first app run
+#                                   into the app data dir (tar root == data dir,
+#                                   so "usr/bin/x" -> DATA/usr/bin/x,
+#                                   "bin/x" -> DATA/bin/x).
+#   prebuilt-<arch>-comptime.zip    compile-time payload, unzipped by Gradle into
+#                                   the APK's jniLibs (lib/<arch>/). Flat, e.g.
+#                                   "liblbx.so" -> lib/<arch>/liblbx.so.
+#   prebuilt-<arch>.json            sha256 manifest of the runtime tree.
+#
+# Architectures are listed in arch.lst. Only arches present in both arch.lst and
+# a repo's [repos.arches.<arch>] table are built for that repo.
+#
+# Each dist entry is { from = "<path the build produces>", to = "<path in artifact>" }.
+#   runtime.to  is relative to the data-dir root (bin/netbox, usr/bin/...).
+#   comptime.to is flat inside the zip -> lib/<arch>/ (liblbx.so).
+#
+# `install` lists the apt packages a repo's build needs (beyond the Go/Rust
+# toolchains CI sets up). resolv_dep.py prints the union of these for the repos
+# that actually changed, so the workflow installs only what's needed.
+
+[publish]
+repo = "Droid-VM/DroidVM-Prebuilts"
+
+[[repos]]
+name = "netbox"
+url = "https://github.com/Droid-VM/netbox"
+branch = "master"
+commit = "latest"            # "latest" tracks branch HEAD; or pin a 40-char sha.
+dir = "netbox"
+install = []                 # Rust toolchain comes from CI
+[repos.arches.arm64-v8a]
+build = ["./build.sh arm64"]
+[repos.arches.arm64-v8a.dist]
+runtime = [{ from = "dist/netbox-android-arm64", to = "bin/netbox" }]
+comptime = []
+
+[[repos]]
+name = "bridgedhcp"
+url = "https://github.com/HuJK/bridgedhcp"
+branch = "master"
+commit = "latest"
+dir = "bridgedhcp"
+install = []                 # Go toolchain comes from CI
+[repos.arches.arm64-v8a]
+build = ["./build.sh arm64"]
+[repos.arches.arm64-v8a.dist]
+runtime = [{ from = "dist/bridgedhcp-android-arm64", to = "bin/bridgedhcp" }]
+comptime = []
+
+[[repos]]
+name = "gvisor-vswitch"
+url = "https://github.com/HuJK/gvisor-vswitch"
+branch = "master"
+commit = "latest"
+dir = "gvisor-vswitch"
+install = ["make"]           # build.sh drives the Makefile
+[repos.arches.arm64-v8a]
+build = ["./build.sh arm64"]
+[repos.arches.arm64-v8a.dist]
+runtime = [{ from = "dist/gvswitch-android-arm64", to = "bin/gvswitch" }]
+comptime = []
+
+[[repos]]
+name = "linux-boot-extractor"
+url = "https://github.com/HuJK/linux-boot-extractor"
+branch = "master"
+commit = "latest"
+dir = "linux-boot-extractor"
+install = []                 # Rust toolchain comes from CI; links with bundled rust-lld
+[repos.arches.arm64-v8a]
+build = ["./build.sh arm64"]
+# lbx is dual-use: the root daemon execs DATA/bin/lbx; the (non-root) UI execs
+# nativeLibraryDir/liblbx.so. So it ships in BOTH artifacts.
+[repos.arches.arm64-v8a.dist]
+runtime = [{ from = "dist/lbx-android-arm64", to = "bin/lbx" }]
+comptime = [{ from = "dist/lbx-android-arm64", to = "liblbx.so" }]
+
+[[repos]]
+name = "pseudo-bridge-rs"
+url = "https://github.com/KusakabeShi/pseudo-bridge-rs"
+branch = "master"
+commit = "latest"
+dir = "pseudo-bridge-rs"
+install = ["clang", "llvm"]  # build.rs compiles the BPF datapath with clang
+[repos.arches.arm64-v8a]
+build = ["./build.sh arm64"]
+[repos.arches.arm64-v8a.dist]
+runtime = [{ from = "dist/pbridge-android-arm64", to = "bin/pbridge" }]
+comptime = []
