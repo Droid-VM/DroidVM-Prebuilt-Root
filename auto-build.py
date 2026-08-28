@@ -16,8 +16,9 @@ Two modes:
     CI publish (--force)       -- every repo is converged to its pinned commit /
         branch HEAD (remote wins: hard reset + clean), then built.
 
-Requires: python3 (3.11+, for stdlib tomllib), plus the toolchains the builds need
-(Go, Rust/cargo, clang, make, ...). xz/zip are handled by the Python stdlib.
+Requires: python3 (3.11+, for stdlib tomllib), xz-utils, plus the toolchains the
+builds need (Go, Rust/cargo, clang, make, ...). zip is handled by the Python
+stdlib.
 """
 import argparse
 import shutil
@@ -185,9 +186,10 @@ def pack_arch(arch, out_dir):
     json_path = out_dir / f"prebuilt-{arch}.json"
     run([sys.executable, str(ROOT / "hash-gen.py"), str(stage), str(json_path)])
 
-    # runtime: plain USTAR tar (paths < 100 chars, no symlinks -> safe), xz via
-    # stdlib lzma. USTAR keeps the on-device reader (org.tukaani:xz + a tiny
-    # ustar parser) dependency-free -- no 7z container, no native binary.
+    # runtime: plain USTAR tar (paths < 100 chars, no symlinks -> safe), piped to
+    # xz so compression can use all available CPU cores. USTAR keeps the
+    # on-device reader (org.tukaani:xz + a tiny ustar parser) dependency-free --
+    # no 7z container or native binary is needed in the APK.
     # Normalize mtime/owner so identical content -> byte-identical archive; that
     # lets the publish step's git diff skip a no-op republish on a cache hit.
     def _norm(ti):
@@ -197,10 +199,39 @@ def pack_arch(arch, out_dir):
         return ti
 
     tar_path = out_dir / f"prebuilt-{arch}.tar.xz"
-    log(f"packing {tar_path.name}")
-    with tarfile.open(tar_path, "w:xz", format=tarfile.USTAR_FORMAT, preset=7) as tar:
-        for entry in sorted(stage.iterdir()):
-            tar.add(entry, arcname=entry.name, filter=_norm)
+    xz = shutil.which("xz")
+    if xz is None:
+        die("xz not found; install xz-utils for multi-threaded archive compression")
+
+    # Stream the tar instead of materializing a large intermediate .tar. Write
+    # to a temporary output so an interrupted/failed xz doesn't replace a good
+    # existing artifact with a truncated one. -T0 lets xz select as many worker
+    # threads as the host and its memory limit permit.
+    tmp_path = tar_path.with_name(f".{tar_path.name}.tmp")
+    tmp_path.unlink(missing_ok=True)
+    cmd = [xz, "--threads=0", "-7", "--stdout"]
+    log(f"packing {tar_path.name} ($ {' '.join(cmd)})")
+    try:
+        with tmp_path.open("wb") as output:
+            proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=output)
+            try:
+                assert proc.stdin is not None
+                with proc.stdin:
+                    with tarfile.open(fileobj=proc.stdin, mode="w|",
+                                      format=tarfile.USTAR_FORMAT) as tar:
+                        for entry in sorted(stage.iterdir()):
+                            tar.add(entry, arcname=entry.name, filter=_norm)
+            except BaseException:
+                if proc.poll() is None:
+                    proc.kill()
+                proc.wait()
+                raise
+            if proc.wait() != 0:
+                raise subprocess.CalledProcessError(proc.returncode, cmd)
+        tmp_path.replace(tar_path)
+    except BaseException:
+        tmp_path.unlink(missing_ok=True)
+        raise
 
     # comptime: plain deflate zip, unpacked by Gradle (java.util.zip) at build
     # time. Fixed date_time + mode keeps it reproducible like the tar above.

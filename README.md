@@ -48,8 +48,9 @@ unchanged push does almost no work and publishes nothing.
 | `prebuilt-<arch>.json` | — | first app run | sha256 manifest of the runtime tree |
 
 The tar is plain **USTAR** (no PAX/GNU extensions) so the on-device reader stays
-a tiny dependency-free ustar parser feeding `XZInputStream`. There is no `.7z`
-and no bundled `7za` anymore.
+a tiny dependency-free ustar parser feeding `XZInputStream`. The build streams
+that tar through `xz -T0 -7`, using as many compression threads as the host and
+xz's memory limit allow. There is no `.7z` and no bundled `7za` anymore.
 
 ## Two usage modes
 
@@ -71,7 +72,7 @@ and no bundled `7za` anymore.
 ## Running it
 
 ```bash
-# Needs Python 3.11+ (stdlib tomllib -- no pip deps) and the build toolchains.
+# Needs Python 3.11+, xz-utils, and the build toolchains (no pip deps).
 
 # local native dev: build whatever is checked out (no remote sync)
 python3 auto-build.py
@@ -84,8 +85,8 @@ python3 auto-build.py --out /path/to/DroidVM/app/src/main/assets/prebuilts
 ```
 
 Toolchains needed when actually building: Go (gvswitch, bridgedhcp),
-Rust/cargo (lbx, netbox, pbridge — pbridge also needs clang), `make`. `xz`/`zip`
-are handled by the Python stdlib.
+Rust/cargo (lbx, netbox, pbridge — pbridge also needs clang), `make`, and
+`xz-utils`. Zip creation is handled by the Python stdlib.
 
 ## Editing the config
 
