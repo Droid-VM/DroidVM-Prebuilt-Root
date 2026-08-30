@@ -49,8 +49,9 @@ unchanged push does almost no work and publishes nothing.
 
 The tar is plain **USTAR** (no PAX/GNU extensions) so the on-device reader stays
 a tiny dependency-free ustar parser feeding `XZInputStream`. The build streams
-that tar through `xz -T0 -7`, using as many compression threads as the host and
-xz's memory limit allow. There is no `.7z` and no bundled `7za` anymore.
+that tar through multi-threaded `xz`; both its xz level and the compile-time
+zip's deflate level are controlled by `DROIDVM_PREBUILT_COMPRESSION_LEVEL`
+(`1`–`9`, default `9`). There is no `.7z` and no bundled `7za` anymore.
 
 ## Two usage modes
 

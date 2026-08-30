@@ -21,6 +21,7 @@ builds need (Go, Rust/cargo, clang, make, ...). zip is handled by the Python
 stdlib.
 """
 import argparse
+import os
 import shutil
 import subprocess
 import sys
@@ -34,6 +35,7 @@ ROOT = Path(__file__).resolve().parent
 AUTO_BUILD = ROOT / "auto-build"     # source repos (gitignored contents)
 MANUAL_BUILD = ROOT / "manual-build"  # runtime staging: committed usr/ + built bin/
 COMPTIME = ROOT / ".comptime"         # gitignored work dir for comptime staging
+COMPRESSION_LEVEL_ENV = "DROIDVM_PREBUILT_COMPRESSION_LEVEL"
 
 
 def log(msg):
@@ -46,6 +48,18 @@ def warn(msg):
 
 def die(msg):
     sys.exit(f"\033[1;31mERROR:\033[0m {msg}")
+
+
+def compression_level():
+    """Return the shared xz/deflate level (1..9), defaulting to maximum."""
+    raw = os.environ.get(COMPRESSION_LEVEL_ENV, "9")
+    try:
+        level = int(raw)
+    except ValueError:
+        die(f"{COMPRESSION_LEVEL_ENV} must be an integer from 1 to 9 (got {raw!r})")
+    if not 1 <= level <= 9:
+        die(f"{COMPRESSION_LEVEL_ENV} must be from 1 to 9 (got {level})")
+    return level
 
 
 def run(cmd, cwd=None):
@@ -169,7 +183,7 @@ def build_repo(repo, arch, changed):
         place(path / d["from"], COMPTIME / arch / d["to"])
 
 
-def pack_arch(arch, out_dir):
+def pack_arch(arch, out_dir, level):
     stage = MANUAL_BUILD / arch
     if not stage.is_dir():
         die(f"runtime staging tree missing: {stage}")
@@ -209,7 +223,7 @@ def pack_arch(arch, out_dir):
     # threads as the host and its memory limit permit.
     tmp_path = tar_path.with_name(f".{tar_path.name}.tmp")
     tmp_path.unlink(missing_ok=True)
-    cmd = [xz, "--threads=0", "-7", "--stdout"]
+    cmd = [xz, "--threads=0", f"-{level}", "--stdout"]
     log(f"packing {tar_path.name} ($ {' '.join(cmd)})")
     try:
         with tmp_path.open("wb") as output:
@@ -238,8 +252,9 @@ def pack_arch(arch, out_dir):
     ctstage = COMPTIME / arch
     if is_nonempty_dir(ctstage):
         zip_path = out_dir / f"prebuilt-{arch}-comptime.zip"
-        log(f"packing {zip_path.name}")
-        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        log(f"packing {zip_path.name} (deflate level {level})")
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED,
+                             compresslevel=level) as zf:
             for f in sorted(ctstage.rglob("*")):
                 if not f.is_file():
                     continue
@@ -266,6 +281,8 @@ def main():
         die("no architectures (arch.lst is empty)")
     out_dir = Path(args.out).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
+    level = compression_level()
+    log(f"prebuilt compression level: {level} ({COMPRESSION_LEVEL_ENV})")
 
     if COMPTIME.exists():
         shutil.rmtree(COMPTIME)
@@ -276,7 +293,7 @@ def main():
         for repo in repos:
             build_repo(repo, arch, changed[repo["dir"]])
     for arch in arches:
-        pack_arch(arch, out_dir)
+        pack_arch(arch, out_dir, level)
 
     log(f"done -> {out_dir}")
 
