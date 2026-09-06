@@ -51,8 +51,13 @@ def die(msg):
 
 
 def compression_level():
-    """Return the shared xz/deflate level (1..9), defaulting to maximum."""
-    raw = os.environ.get(COMPRESSION_LEVEL_ENV, "9")
+    """Return the shared xz/deflate level (1..9), defaulting to the fastest.
+
+    A build here is nearly always a development one, where the minutes xz -9 spends
+    squeezing a payload that is about to be reinstalled are pure waste; the release
+    workflows ask for 9 explicitly through COMPRESSION_LEVEL_ENV.
+    """
+    raw = os.environ.get(COMPRESSION_LEVEL_ENV, "1")
     try:
         level = int(raw)
     except ValueError:
